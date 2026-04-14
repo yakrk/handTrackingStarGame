@@ -16,15 +16,16 @@ class Starfish:
     """
 
     LIFESPAN: float = 5.0          # seconds
-    HIT_RADIUS: int = 60           # pixels
+    HIT_RADIUS: int = 40           # pixels (~2/3 of previous 60)
     NUM_POINTS: int = 5
-    OUTER_RADIUS: int = 50
-    INNER_RADIUS: int = 25
+    OUTER_RADIUS: int = 34         # ~2/3 of previous 50 (for projector)
+    INNER_RADIUS: int = 17         # ~2/3 of previous 25
     COLOR = (255, 140, 0)          # orange
     OUTLINE_COLOR = (200, 80, 0)
     BOB_AMPLITUDE: float = 20.0    # pixels
     BOB_SPEED: float = 2.0         # radians per second
     ROTATION_SPEED: float = 0.5    # radians per second
+    FADE_OUT_TIME: float = 1.0     # fade during last N seconds of life
 
     # Margins to keep starfish away from the UI areas
     MARGIN_TOP: int = 80
@@ -41,9 +42,6 @@ class Starfish:
         self._rotation: float = 0.0
         self.respawn()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     @property
     def alive(self) -> bool:
         return self._age < self.LIFESPAN
@@ -66,8 +64,26 @@ class Starfish:
             self.OUTER_RADIUS, self.INNER_RADIUS,
             self.NUM_POINTS, self._rotation,
         )
-        pygame.draw.polygon(surface, self.COLOR, points)
-        pygame.draw.polygon(surface, self.OUTLINE_COLOR, points, width=2)
+
+        # In the final FADE_OUT_TIME seconds of life, fade the starfish out so
+        # the player can visually distinguish natural expiry from a tap hit
+        # (which produces a white flash + score popup instead).
+        remaining = self.LIFESPAN - self._age
+        if remaining < self.FADE_OUT_TIME:
+            progress = max(0.0, remaining / self.FADE_OUT_TIME)
+            alpha = int(70 + 185 * progress)  # 255 -> 70
+            pad = 4
+            box = self.OUTER_RADIUS * 2 + pad * 2
+            temp = pygame.Surface((box, box), pygame.SRCALPHA)
+            offset_x = box / 2.0 - cx
+            offset_y = box / 2.0 - cy
+            local = [(p[0] + offset_x, p[1] + offset_y) for p in points]
+            pygame.draw.polygon(temp, (*self.COLOR, alpha), local)
+            pygame.draw.polygon(temp, (*self.OUTLINE_COLOR, alpha), local, width=2)
+            surface.blit(temp, (cx - box / 2.0, cy - box / 2.0))
+        else:
+            pygame.draw.polygon(surface, self.COLOR, points)
+            pygame.draw.polygon(surface, self.OUTLINE_COLOR, points, width=2)
 
     def check_hit(self, point: Optional[tuple[int, int]]) -> bool:
         if point is None:
@@ -88,9 +104,6 @@ class Starfish:
         self._bob_phase = random.uniform(0.0, 2.0 * math.pi)
         self._rotation = random.uniform(0.0, 2.0 * math.pi)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def _star_polygon_points(
         cx: float,
@@ -100,10 +113,6 @@ class Starfish:
         num_points: int,
         rotation: float = 0.0,
     ) -> list[tuple[float, float]]:
-        """Return the vertices of a star polygon.
-
-        The first vertex points "up" (negative y) when rotation is 0.
-        """
         total_vertices = num_points * 2
         step = (2.0 * math.pi) / total_vertices
         start = rotation - (math.pi / 2.0)
@@ -115,10 +124,6 @@ class Starfish:
         return points
 
 
-# ----------------------------------------------------------------------
-# Standalone test: renders 3 bouncing starfish without the full game.
-# Run with: python starfish.py
-# ----------------------------------------------------------------------
 def _standalone_test() -> None:
     pygame.init()
     width, height = 1280, 720

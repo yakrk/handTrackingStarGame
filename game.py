@@ -1,5 +1,6 @@
 """Game state management: starfish pool, scoring, timer, flash effects, UI."""
 
+import math
 from enum import Enum, auto
 from typing import Optional
 
@@ -16,7 +17,7 @@ class GameState(Enum):
 class FlashEffect:
     """Expanding white circle that fades out at a hit location."""
 
-    DURATION: float = 0.4   # seconds
+    DURATION: float = 0.4
     MAX_RADIUS: int = 80
 
     def __init__(self, x: float, y: float) -> None:
@@ -44,16 +45,48 @@ class FlashEffect:
         surface.blit(temp, (int(self.x) - radius, int(self.y) - radius))
 
 
-class Game:
-    """Owns the score, timer, starfish pool, flash effects, and state machine.
+class ScorePopup:
+    """Floating '+10' text that rises and fades after a successful tap."""
 
-    Does not own the Pygame display or main clock; those are managed by main.py.
-    """
+    DURATION: float = 1.0
+    RISE_SPEED: float = 60.0
+
+    def __init__(self, x: float, y: float, font: pygame.font.Font,
+                 text: str = "+10",
+                 color: tuple[int, int, int] = (255, 230, 120)) -> None:
+        self.x = float(x)
+        self.y = float(y)
+        self._text = text
+        self._color = color
+        self._font = font
+        self._age: float = 0.0
+
+    @property
+    def finished(self) -> bool:
+        return self._age >= self.DURATION
+
+    def update(self, dt: float) -> None:
+        self._age += dt
+        self.y -= self.RISE_SPEED * dt
+
+    def draw(self, surface: pygame.Surface) -> None:
+        if self.finished:
+            return
+        progress = self._age / self.DURATION
+        alpha = max(0, min(255, int(255 * (1.0 - progress))))
+        text_surf = self._font.render(self._text, True, self._color)
+        text_surf.set_alpha(alpha)
+        rect = text_surf.get_rect(center=(int(self.x), int(self.y)))
+        surface.blit(text_surf, rect)
+
+
+class Game:
+    """Owns the score, timer, starfish pool, flash effects, and state machine."""
 
     MAX_STARFISH: int = 3
-    GAME_DURATION: float = 60.0    # seconds
+    GAME_DURATION: float = 60.0
     BACKGROUND_COLOR = (10, 20, 60)
-    MAX_DT: float = 0.1            # clamp to prevent spikes on pause/drag
+    MAX_DT: float = 0.1
 
     def __init__(self, screen_width: int = 1280, screen_height: int = 720) -> None:
         self._screen_width = screen_width
@@ -63,13 +96,14 @@ class Game:
             Starfish(screen_width, screen_height) for _ in range(self.MAX_STARFISH)
         ]
         self._flashes: list[FlashEffect] = []
+        self._popups: list[ScorePopup] = []
 
-        # Font caching
         self._font_score = pygame.font.SysFont("Arial", 48, bold=True)
         self._font_timer = pygame.font.SysFont("Arial", 48, bold=True)
         self._font_game_over = pygame.font.SysFont("Arial", 96, bold=True)
         self._font_final_score = pygame.font.SysFont("Arial", 48)
         self._font_restart = pygame.font.SysFont("Arial", 32)
+        self._font_popup = pygame.font.SysFont("Arial", 48, bold=True)
 
         self._score: int = 0
         self._timer: float = self.GAME_DURATION
@@ -77,9 +111,6 @@ class Game:
 
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Public properties
-    # ------------------------------------------------------------------
     @property
     def state(self) -> GameState:
         return self._state
@@ -92,14 +123,12 @@ class Game:
     def time_remaining(self) -> float:
         return max(0.0, self._timer)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
     def reset(self) -> None:
         self._score = 0
         self._timer = self.GAME_DURATION
         self._state = GameState.PLAYING
         self._flashes.clear()
+        self._popups.clear()
         for fish in self._starfish:
             fish.respawn()
 
@@ -107,10 +136,13 @@ class Game:
         if dt > self.MAX_DT:
             dt = self.MAX_DT
 
-        # Flash effects always update so residual effects finish on game over.
         for flash in self._flashes:
             flash.update(dt)
         self._flashes = [f for f in self._flashes if not f.finished]
+
+        for popup in self._popups:
+            popup.update(dt)
+        self._popups = [p for p in self._popups if not p.finished]
 
         if self._state != GameState.PLAYING:
             return
@@ -127,11 +159,7 @@ class Game:
         self._manage_starfish_pool()
         self._check_hits(finger_pos)
 
-    # ------------------------------------------------------------------
-    # Drawing
-    # ------------------------------------------------------------------
     def draw_background(self, surface: pygame.Surface) -> None:
-        """Fill with dark blue. Separated so Step 2 can swap in video."""
         surface.fill(self.BACKGROUND_COLOR)
 
     def draw(self, surface: pygame.Surface, finger_pos: Optional[tuple[int, int]] = None) -> None:
@@ -141,6 +169,9 @@ class Game:
         for flash in self._flashes:
             flash.draw(surface)
 
+        for popup in self._popups:
+            popup.draw(surface)
+
         if finger_pos is not None:
             self._draw_finger_cursor(surface, finger_pos)
 
@@ -149,9 +180,6 @@ class Game:
         if self._state == GameState.GAME_OVER:
             self._draw_game_over(surface)
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
     def _manage_starfish_pool(self) -> None:
         for fish in self._starfish:
             if not fish.alive:
@@ -164,24 +192,32 @@ class Game:
             if fish.check_hit(finger_pos):
                 cx, cy = fish.center
                 self._flashes.append(FlashEffect(cx, cy))
+                self._popups.append(ScorePopup(cx, cy, self._font_popup))
                 self._score += 10
                 fish.respawn()
-                # Only score one hit per frame to avoid double-counting.
                 break
 
     def _draw_finger_cursor(self, surface: pygame.Surface, pos: tuple[int, int]) -> None:
         x, y = int(pos[0]), int(pos[1])
-        pygame.draw.circle(surface, (255, 255, 255), (x, y), 10, width=2)
+
+        t = pygame.time.get_ticks() / 1000.0
+        pulse = 22 + int(4 * math.sin(t * 6.0))
+        pygame.draw.circle(surface, (255, 230, 40), (x, y), pulse, width=3)
+
+        pygame.draw.line(surface, (255, 230, 40), (x - 14, y), (x - 6, y), 2)
+        pygame.draw.line(surface, (255, 230, 40), (x + 6, y), (x + 14, y), 2)
+        pygame.draw.line(surface, (255, 230, 40), (x, y - 14), (x, y - 6), 2)
+        pygame.draw.line(surface, (255, 230, 40), (x, y + 6), (x, y + 14), 2)
+
+        pygame.draw.circle(surface, (255, 60, 60), (x, y), 7)
         pygame.draw.circle(surface, (255, 255, 255), (x, y), 3)
 
     def _draw_ui(self, surface: pygame.Surface) -> None:
-        # Score top-left
         score_text = self._font_score.render(
             f"Score: {self._score}", True, (255, 255, 255)
         )
         surface.blit(score_text, (20, 10))
 
-        # Timer top-right
         timer_text = self._font_timer.render(
             f"{self.time_remaining:.1f}s", True, (255, 255, 255)
         )
@@ -190,7 +226,6 @@ class Game:
         surface.blit(timer_text, timer_rect)
 
     def _draw_game_over(self, surface: pygame.Surface) -> None:
-        # Semi-transparent overlay for readability
         overlay = pygame.Surface(
             (self._screen_width, self._screen_height), pygame.SRCALPHA
         )
