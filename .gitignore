@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+env/
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project data (large files, not tracked by git)
+data/raw/*.csv
+data/landcover/*.geojson
+data/landcover/*.tif
+data/processed/*.parquet
+data/processed/*.json
+
+# Output (generated — not tracked)
+output/maps/*.html
+output/charts/*.png
+output/charts/*.html
+output/tables/*.csv
+output/tables/*.xlsx
+output/report.md
